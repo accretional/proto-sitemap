@@ -21,8 +21,10 @@ It rides [xmile](https://github.com/accretional/xmile)'s XML engine and
 - **The sitemap structure lives in the grammar, not in Go.** `formats/sitemap.ebnf`
   is the vocabulary (which elements nest in which); it is compiled to a proto
   descriptor at runtime by xmile's `service.CompileGrammar`. Never hand-code the
-  element structure in Go. The only Go a format may carry is the irreducible,
-  CFG-inexpressible semantics (`service/validate.go`).
+  element structure in Go. The only Go a format may carry is the semantics the
+  vocabulary grammar does not carry — the leaf-value, limit, and namespace rules in
+  `service/validate.go` (out-of-grammar by the projection's design, not because a
+  CFG can't express them; see ADR 0003).
 - **There is no codegen step.** Unlike xmile, proto-sitemap generates and commits
   no proto: the format is *data*, compiled on demand. `build.sh` only sets up and
   builds. (If you ever add a hand-written `.proto` or a generated artifact, add a
@@ -67,14 +69,22 @@ Xml   ─▶ Generate ─▶ bytes   (inverse of Parse; RoundTrip checks the inv
   is typed by local name and any unmodeled markup (Google's `image:`/`video:`/
   `news:`/`xhtml:link` extensions, or a stray element) passes through instead of
   being rejected. The full untyped tree is always available from `Parse`. ADR 0001.
-- **CFG-inexpressible rules are the only Go a format carries** (`service/validate.go`):
-  the structural pre-check `validateSitemap` (the root is `<urlset>`/`<sitemapindex>`;
+- **Out-of-grammar rules are the only Go a format carries** (`service/validate.go`):
+  leaf-value, limit, and namespace checks the projection schema doesn't carry —
+  mostly *regular*, not CFG-inexpressible (ADR 0003 corrected that framing). The
+  structural pre-check `validateSitemap` (the root is `<urlset>`/`<sitemapindex>`;
   wired in as the Schema's `PreValidate`, it decides a document is a sitemap at all)
   and the soft conformance rules `Conformance`/`Lint` (the sitemap namespace; `<loc>`
   required, ≤ 2048 chars, an absolute URL; `<lastmod>` a W3C Datetime; `<changefreq>`
   in the closed set; `<priority>` in [0.0, 1.0]; ≤ 50,000 entries; ≤ 50 MiB). These
   mirror how xmile splits RSS's `validateRSS` (hard) from `RSSConformance` (soft):
   the hard rule gates, the soft ones are reported because real sitemaps bend them.
+- **The input boundary hard-refuses hostile source** (`service/guard.go`,
+  `guardSource` on every `Parse`/`Process`/`Lint`). Sitemaps are fetched from
+  arbitrary servers, so before any bytes reach xmile it rejects source over 50 MiB
+  and any document carrying a `DOCTYPE` (the XML entity-expansion vector — sitemaps
+  have none). Defense in depth over xmile's own parser guards (xmile ADR 0009:
+  entity-expansion + nesting-depth caps). See ADR 0003.
 - **Round-trip is at the canonical infoset** (`service/roundtrip.go`). xmile's
   `Generate` is a faithful inverse of `Parse` but normalizes the encoding
   declaration to UTF-8 and coalesces character-data runs, so `RoundTrip` clears the
@@ -84,10 +94,13 @@ Xml   ─▶ Generate ─▶ bytes   (inverse of Parse; RoundTrip checks the inv
 ## Testing
 
 - **Two gates.**
-  - `go test ./...` is self-contained (`service/sitemap_test.go`): grammar compiles,
+  - `go test ./...` is self-contained: `service/sitemap_test.go` (grammar compiles,
     both roots project, namespaced extensions pass through, non-sitemaps are
-    rejected, round-trip is exact (including a lowercase encoding declaration), and
-    conformance both passes clean and catches violations.
+    rejected, round-trip is exact, conformance passes clean and catches violations)
+    and `service/adversarial_test.go` — the hardening gates from the adversarial
+    review (ADR 0003): priority/loc validation, and the input boundary refusing
+    oversized, DOCTYPE-bearing, deeply-nested, and entity-bomb payloads. This is
+    the large-payload / malicious-input coverage the suite must keep.
   - The corpus runner (`go run ./testing`, run by `test.sh`) fetches a curated set
     of **real, public sitemaps** (cached under `testing/corpus/`, gitignored) and,
     over each: **gates** that every well-formed document round-trips at the canonical
@@ -103,7 +116,8 @@ Xml   ─▶ Generate ─▶ bytes   (inverse of Parse; RoundTrip checks the inv
 | `formats/sitemap.ebnf` | the sitemap vocabulary (data; both roots) |
 | `formats/embed.go` | embeds the spec for runtime compilation |
 | `service/sitemap.go` | `Schema` (compile + cache), `Parse`/`Process`/`Generate`/`Parser` |
-| `service/validate.go` | CFG-inexpressible rules: `validateSitemap` (hard), `Conformance`/`Lint` (soft) |
+| `service/validate.go` | out-of-grammar rules: `validateSitemap` (hard), `Conformance`/`Lint` (soft) |
+| `service/guard.go` | input boundary: hard-reject oversized (>50 MiB) or DOCTYPE-bearing source (`guardSource`, `InputError`) |
 | `service/roundtrip.go` | `RoundTrip` + canonical-infoset comparison |
 | `service/sitemap_test.go` | self-contained unit gate |
 | `cmd/sitemapparse/` | CLI: doc → typed AST (`-generic` AST, `-lint` warnings) |

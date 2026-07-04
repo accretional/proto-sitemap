@@ -5,7 +5,9 @@
 // The design mirrors how xmile handles RSS 2.0: the sitemap *structure* is data
 // (formats/sitemap.ebnf, an EBNF element vocabulary compiled on demand into a
 // proto descriptor by xmile's service.CompileGrammar); the only Go a format
-// needs is its irreducible, CFG-inexpressible semantics (validate.go).
+// needs is the semantics that vocabulary grammar does not carry — the leaf-value,
+// limit, and namespace rules in validate.go (see ADR 0003; they are out-of-
+// grammar by the projection's design, not because a CFG cannot express them).
 //
 // One XML parser (xmile's) parses bytes into the generic, lossless Tag tree;
 // Process then projects that tree into the typed sitemap AST. Because the
@@ -68,6 +70,9 @@ func Parser() (*service.Parser, error) { return service.Default() }
 // *service.WFError); it performs no sitemap-specific validation. Use Process to
 // project into the typed AST, or Lint for the conformance rules.
 func Parse(p *service.Parser, src string) (*xmlpb.Xml, error) {
+	if err := guardSource(src); err != nil {
+		return nil, err
+	}
 	return p.Parse(src, false)
 }
 
@@ -79,6 +84,9 @@ func Parse(p *service.Parser, src string) (*xmlpb.Xml, error) {
 // e.g. URLCount / SitemapCount) and the root element's name. A document that is
 // not a sitemap is a *service.ValidityError.
 func Process(p *service.Parser, src string) (proto.Message, string, error) {
+	if err := guardSource(src); err != nil {
+		return nil, "", err
+	}
 	sch, err := Schema()
 	if err != nil {
 		return nil, "", err

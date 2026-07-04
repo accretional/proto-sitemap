@@ -9,8 +9,10 @@ proto-sitemap must parse and round-trip Sitemaps-0.9 documents (`<urlset>` and
 rss-2.0.ebnf." xmile's model (ADR 0008) is: one universal XML parser produces a
 homogeneous `Xml`/`Tag` AST; a *format* is a spec file compiled on demand into a
 proto descriptor; one generic walk projects the parsed tree into the typed
-message; a small Go file carries only the CFG-inexpressible semantics. RSS 2.0 is
-the worked example (`formats/rss-2.0.ebnf` + `service/rss.go`).
+message; a small Go file carries only the semantics the vocabulary grammar does
+not (leaf values, limits, namespace — mostly regular, out-of-grammar by design,
+not CFG-inexpressible; see ADR 0003). RSS 2.0 is the worked example
+(`formats/rss-2.0.ebnf` + `service/rss.go`).
 
 Two facts make sitemaps differ from RSS in ways that drive the design:
 
@@ -47,8 +49,10 @@ not an `nsExtensible` one.**
     `image:`/`video:`/`news:`/`xhtml:link` extensions — and any other unmodeled
     markup — pass through instead of being rejected. **Chosen.**
 
-- **CFG-inexpressible rules split hard/soft**, mirroring RSS's `validateRSS` vs
-  `RSSConformance`:
+- **Out-of-grammar rules split hard/soft**, mirroring RSS's `validateRSS` vs
+  `RSSConformance` (these are out-of-grammar because the projection schema carries
+  no leaf-value/cardinality checks — mostly *regular* rules, not CFG-inexpressible;
+  ADR 0003):
   - *hard* (`validateSitemap`, the Schema's `PreValidate`): the root is `<urlset>`
     or `<sitemapindex>`. This is what makes a document a sitemap at all.
   - *soft* (`Conformance`/`Lint`, reported not enforced): the sitemap namespace;

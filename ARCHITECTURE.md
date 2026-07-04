@@ -73,7 +73,7 @@ entity spelling, quote style, and insignificant whitespace are not recorded.
 |---|---|
 | `formats/sitemap.ebnf`, `formats/embed.go` | L2 — the sitemap format as data |
 | `service/sitemap.go` | schema compile+cache, `Parse`/`Process`/`Generate` |
-| `service/validate.go` | CFG-inexpressible rules (hard pre-check + soft conformance) |
+| `service/validate.go` | out-of-grammar rules (hard pre-check + soft conformance; see ADR 0003) |
 | `service/roundtrip.go` | canonical-infoset round-trip |
 | `cmd/sitemapparse`, `cmd/sitemapgenerate` | CLIs |
 | `testing/` | real-sitemap corpus fetcher + runner |

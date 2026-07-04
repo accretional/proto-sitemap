@@ -31,7 +31,9 @@
    container is a repetition of a choice ({ a | b | ... }), which lowers to a
    repeated message-with-oneof that preserves document order across variants.
 
-   What is NOT here (a CFG cannot express it; enforced in service/validate.go):
+   What is NOT here (the projection schema doesn't carry it — leaf values, counts,
+   and the root namespace; enforced in service/validate.go, see ADR 0003. Most of
+   these are regular, not CFG-inexpressible; they are out-of-grammar by design):
      - the root's namespace (http://www.sitemaps.org/schemas/sitemap/0.9);
      - <loc> is required and <= 2048 characters, and must be a URL;
      - <lastmod> is a W3C Datetime;

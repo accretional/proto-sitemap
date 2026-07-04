@@ -2,7 +2,7 @@
 // vocabulary (sitemap.ebnf), compiled on demand into a proto descriptor by
 // xmile's EBNF_VOCAB front-end (service.CompileGrammar). The structure lives
 // here as data, exactly as xmile keeps rss-2.0.ebnf; the only Go a format needs
-// is the irreducible, CFG-inexpressible semantics (service/validate.go).
+// is the semantics the vocabulary grammar doesn't carry (service/validate.go).
 package formats
 
 import _ "embed"

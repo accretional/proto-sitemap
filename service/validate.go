@@ -1,16 +1,21 @@
 package sitemap
 
-// validate.go — the sitemap protocol's irreducible, CFG-inexpressible semantics,
+// validate.go — the sitemap semantics the vocabulary grammar does not carry,
 // the analogue of xmile's service/rss.go: the structural pre-check
 // (validateSitemap, wired in as the Schema's PreValidate — it decides whether a
 // document is a sitemap at all), and the soft conformance rules (Conformance /
 // Lint — the value constraints the protocol states but real-world sitemaps
-// routinely bend). A grammar states which elements nest; only what a CFG cannot
-// say lives here.
+// routinely bend). formats/sitemap.ebnf is a projection schema over opaque-text
+// leaves; it states which elements nest, so leaf-value and cross-entry rules
+// live here — NOT because a context-free grammar cannot express them (most are
+// regular: enums, datetime, a decimal bound, a fixed entry cap), but because the
+// projection deliberately does not check leaf content or cardinality. See
+// docs/decisions/0003-adversarial-review-findings.md.
 
 import (
 	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +32,10 @@ const (
 	MaxBytes   = 50 * 1024 * 1024
 	MaxLocLen  = 2048
 )
+
+// priorityRe matches a plain decimal numeral: digits with an optional fraction,
+// no sign/exponent/hex. validPriority adds the [0.0, 1.0] range check.
+var priorityRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?$`)
 
 // changefreqValues is the closed set of <changefreq> values the protocol defines.
 var changefreqValues = map[string]bool{
@@ -54,12 +63,16 @@ func validateSitemap(doc *xmlpb.Xml) error {
 }
 
 // Lint parses sitemap source and returns its conformance warnings — the
-// real-world validation entry point. Well-formedness is a hard error
-// (*service.WFError); a document that is not a sitemap is a hard error
-// (*service.ValidityError); every soft rule (namespace, <loc>, <lastmod>,
-// <changefreq>, <priority>, entry count, and the uncompressed byte-size limit)
-// is a warning. A nil error with no warnings means fully conformant.
+// real-world validation entry point. Input past the boundary is a hard error
+// (*InputError: over 50 MiB, or carrying a DOCTYPE; see guard.go); malformed
+// XML is a hard error (*service.WFError); a document that is not a sitemap is a
+// hard error (*service.ValidityError); every soft rule (namespace, <loc>,
+// <lastmod>, <changefreq>, <priority>, entry count) is a warning. A nil error
+// with no warnings means fully conformant.
 func Lint(p *service.Parser, src []byte) ([]string, error) {
+	if err := guardSource(string(src)); err != nil {
+		return nil, err
+	}
 	x, err := p.Parse(string(src), false)
 	if err != nil {
 		return nil, err
@@ -67,11 +80,7 @@ func Lint(p *service.Parser, src []byte) ([]string, error) {
 	if err := validateSitemap(x); err != nil {
 		return nil, err
 	}
-	warn := Conformance(x)
-	if len(src) > MaxBytes {
-		warn = append(warn, fmt.Sprintf("file is %d bytes, exceeds the %d-byte (50 MiB) uncompressed limit", len(src), MaxBytes))
-	}
-	return warn, nil
+	return Conformance(x), nil
 }
 
 // Conformance returns the soft Sitemaps-0.9 warnings for a parsed document — the
@@ -138,7 +147,7 @@ func conformEntries(root *xmlpb.Tag, kind string, urlExtras bool) []string {
 			if v == "" {
 				continue
 			}
-			if f, err := strconv.ParseFloat(v, 64); err != nil || f < 0.0 || f > 1.0 {
+			if !validPriority(v) {
 				warn = append(warn, fmt.Sprintf("<url> #%d <priority> %q is not a number in [0.0, 1.0]", i+1, v))
 			}
 		}
@@ -157,10 +166,26 @@ func checkLoc(loc *xmlpb.Tag, kind string, i int) []string {
 	if len(v) > MaxLocLen {
 		warn = append(warn, fmt.Sprintf("<%s> #%d <loc> is %d characters, exceeds the %d limit", kind, i+1, len(v), MaxLocLen))
 	}
-	if u, err := url.Parse(v); err != nil || !u.IsAbs() {
-		warn = append(warn, fmt.Sprintf("<%s> #%d <loc> %q is not an absolute URL", kind, i+1, v))
+	// A sitemap <loc> must be a crawlable http/https URL. url.Parse alone accepts
+	// any absolute-scheme URI (javascript:, data:, file:, mailto:, …), so the
+	// scheme is checked explicitly.
+	if u, err := url.Parse(v); err != nil || !u.IsAbs() || (u.Scheme != "http" && u.Scheme != "https") {
+		warn = append(warn, fmt.Sprintf("<%s> #%d <loc> %q is not an http(s) URL", kind, i+1, v))
 	}
 	return warn
+}
+
+// validPriority reports whether v is a Sitemaps-0.9 <priority>: a plain decimal
+// numeral whose value is in [0.0, 1.0]. The lexical check rejects the forms
+// strconv.ParseFloat would otherwise accept but the protocol does not — NaN, Inf,
+// exponents (1e0), hexadecimal floats (0x1p-1), and a leading sign — and the
+// range check rejects out-of-band values. The accepted set is regular (ADR 0003).
+func validPriority(v string) bool {
+	if !priorityRe.MatchString(v) {
+		return false
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	return err == nil && f >= 0.0 && f <= 1.0
 }
 
 // w3cLayouts are the levels of the W3C Datetime profile the protocol allows for

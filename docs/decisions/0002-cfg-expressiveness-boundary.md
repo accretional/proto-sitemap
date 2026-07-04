@@ -1,7 +1,15 @@
 # ADR 0002 — Where the context-free boundary sits
 
-Status: **DRAFT — pending adversarial review** (checklist at the end; do not cite
-as settled). Written 2026-07-03.
+Status: **reviewed — superseded in part by ADR 0003** (2026-07-03). The
+adversarial pass has been done; its findings are in
+`0003-adversarial-review-findings.md`. This ADR's rule-by-rule table stands (the
+weak verbal claims it flagged were confirmed wrong), with two corrections from
+0003: (a) gluon parses with a **CFG** recognizer, not a PEG, so the
+"wrong-formalism" attack in the checklist is _refuted_, not merely open; and (b)
+the deeper point is that the sitemap grammar is a **projection schema, not a
+string recognizer at all**, so "can a CFG express X?" is the wrong question for
+why any rule is in Go. Read this table as background; read 0003 for the verdict.
+Written 2026-07-03.
 
 ## Question
 
