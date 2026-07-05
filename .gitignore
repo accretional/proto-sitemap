@@ -30,3 +30,6 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Fetched sitemap corpus (best-effort, re-fetched by `go run ./testing`)
+testing/corpus/

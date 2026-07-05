@@ -1,0 +1,61 @@
+(* sitemap.ebnf — the Sitemaps 0.9 protocol as a schema grammar over the XML
+   element vocabulary (https://www.sitemaps.org/protocol.html, and as consumed
+   by Google Search: https://developers.google.com/search/docs/crawling-indexing/sitemaps/build-sitemap).
+
+   Like xmile's rss-2.0.ebnf, this is NOT a character grammar: xmile's
+   lang/xml.ebnf already parses the bytes into the generic Tag tree. This
+   grammar describes the sitemap *vocabulary* — which elements nest in which —
+   so the projector (service/sitemap.go, riding xmile's generic engine) can
+   restructure a parsed Tag tree into a typed AST. It is the EBNF analogue of a
+   DTD/XSD, compiled to a proto descriptor by gluon's compiler through xmile's
+   service.CompileGrammar (the EBNF_VOCAB front-end).
+
+   Conventions (interpreted by service.CompileGrammar):
+
+     - A rule is an element; its body lists the child elements it may contain.
+     - `text` is the character content of a leaf element; it has no rule of its
+       own and lowers to a `string text` field.
+     - Any reference with no rule of its own becomes a string field; every other
+       reference becomes a message field. (Same rule CompileDTD uses.)
+
+   TWO roots, one vocabulary. A sitemap file is either a <urlset> (a set of
+   URLs) or a <sitemapindex> (a set of child sitemaps). gluon's GrammarToAST
+   emits a message for every rule, and xmile's Process resolves the document
+   root by element name, so one compiled descriptor serves both roots. `urlset`
+   is written first only to satisfy the "start rule is first" convention; both
+   are top-level roots.
+
+   Order-insensitive by design. The spec lists a fixed child order
+   (loc, lastmod, changefreq, priority), but real-world sitemaps routinely
+   reorder or repeat, so — exactly as rss-2.0.ebnf models <channel> — each
+   container is a repetition of a choice ({ a | b | ... }), which lowers to a
+   repeated message-with-oneof that preserves document order across variants.
+
+   What is NOT here (the projection schema doesn't carry it — leaf values, counts,
+   and the root namespace; enforced in service/validate.go, see ADR 0003. Most of
+   these are regular, not CFG-inexpressible; they are out-of-grammar by design):
+     - the root's namespace (http://www.sitemaps.org/schemas/sitemap/0.9);
+     - <loc> is required and <= 2048 characters, and must be a URL;
+     - <lastmod> is a W3C Datetime;
+     - <changefreq> is one of always|hourly|daily|weekly|monthly|yearly|never;
+     - <priority> is a number in [0.0, 1.0] (default 0.5);
+     - a file has at most 50,000 entries and is at most 50 MiB uncompressed.
+
+   Namespace extensibility (Google's image:, video:, news:, and xhtml:link
+   alternates ride a sitemap in their own namespaces) is enforced by the
+   projector, not the grammar: a namespace-qualified element/attribute is a
+   tolerated extension, an unprefixed unknown one is invalid — the same rule
+   RSS 2.0 uses. *)
+
+urlset = { url } ;
+
+url = { loc | lastmod | changefreq | priority } ;
+
+sitemapindex = { sitemap } ;
+
+sitemap = { loc | lastmod } ;
+
+loc        = text ;
+lastmod    = text ;
+changefreq = text ;
+priority   = text ;
