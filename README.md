@@ -78,6 +78,20 @@ curl -s localhost:8080/v1/sitemap:expand -H 'Content-Type: application/json' -d 
 }
 ```
 
+`./deploy.sh` ships it to Cloud Run (project `speax-498608`, `us-central1`):
+scale-to-zero, IAM-authenticated, a runtime identity with no project roles — the
+service only makes outbound HTTP and needs nothing from GCP.
+
+```
+https://sitemap-svc-1041587693629.us-central1.run.app
+```
+
+Sizing differs from a small service, because the work does: 2Gi and a *low*
+per-instance concurrency (concurrent walks multiply peak memory, and a walk can
+pull dozens of documents of up to 50 MiB each), and a 900s request timeout
+rather than Cloud Run's 300s default — a real walk of a large site measured
+~291s, which the default would have killed mid-flight.
+
 What the service owns, because the format does not:
 
 - **Gzip.** Sitemaps are commonly served as `.xml.gz`; payloads are gunzipped by

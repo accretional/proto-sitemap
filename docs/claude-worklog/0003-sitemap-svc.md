@@ -52,6 +52,32 @@ regrammar, yielding empty URLs rather than an error.
 cross-submission rule, and it closes the shape where an untrusted `<sitemapindex>`
 aims the fetcher at a host nobody pointed it at. `-allow-cross-host` opts in.
 
+## Deployment (2026-08-27)
+
+`./deploy.sh` mirrors webrisk-svc's conventions (same project `speax-498608`,
+`us-central1`, the `embedder` Artifact Registry repo, a per-service SA with no
+project roles, `--no-allow-unauthenticated`, git-SHA image tags), and runs
+`gcloud auth configure-docker` itself — the first deploy failed on an
+unauthenticated Artifact Registry push.
+
+Live at `https://sitemap-svc-1041587693629.us-central1.run.app`.
+
+Two sizing decisions worth keeping, both driven by what a walk actually does:
+
+- **2Gi memory and concurrency 4, not the usual 80.** A walk can pull dozens of
+  documents of up to 50 MiB each and project them into a typed AST; concurrent
+  walks multiply that peak. 80-per-instance would OOM on large sitemaps.
+- **900s request timeout, not the 300s default.** A real walk of a large site
+  measured ~291s against these services — close enough to the default that a
+  slightly larger site would be killed mid-flight, and the failure would look
+  like a network error rather than a timeout.
+
+Known quirk, environmental rather than ours: `GET /healthz` returns a Google 404
+that never reaches the container. `webrisk`, an unrelated pre-existing service in
+the same project, behaves identically, so something ahead of Cloud Run answers
+non-API paths here. The API endpoint works and unauthenticated requests are still
+refused with 403.
+
 ## Gate
 
 `./LET_IT_RIP.sh` green: unit + adversarial gates, the 10 new
