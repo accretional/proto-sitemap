@@ -21,6 +21,7 @@ require (
 require (
 	github.com/accretional/gluon v0.0.0-00010101000000-000000000000 // indirect
 	github.com/accretional/proto-expr v0.0.0-20260416071217-9a69001c59bb // indirect
+	go.starlark.net v0.0.0-20260522144826-ec58d4b459e2 // indirect
 	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.35.0 // indirect

@@ -33,3 +33,4 @@ go.work.sum
 
 # Fetched sitemap corpus (best-effort, re-fetched by `go run ./testing`)
 testing/corpus/
+/sitemap-svc

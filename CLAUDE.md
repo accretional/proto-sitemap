@@ -25,6 +25,12 @@ It rides [xmile](https://github.com/accretional/xmile)'s XML engine and
   vocabulary grammar does not carry — the leaf-value, limit, and namespace rules in
   `service/validate.go` (out-of-grammar by the projection's design, not because a
   CFG can't express them; see ADR 0003).
+- **The service's wire types are Go structs on purpose.** `cmd/sitemap-svc/api.go`
+  defines the HTTP/JSON request/response with plain structs and `json` tags. That is
+  not an oversight to be corrected into a `.proto`: the rule below would then oblige
+  a `regen.sh` and a codegen step for a transport envelope, and the sitemap *domain*
+  is already proto (the typed AST `Process` returns). If the service ever needs gRPC,
+  add the `.proto` then — and the `regen.sh` with it.
 - **There is no codegen step.** Unlike xmile, proto-sitemap generates and commits
   no proto: the format is *data*, compiled on demand. `build.sh` only sets up and
   builds. (If you ever add a hand-written `.proto` or a generated artifact, add a
@@ -82,9 +88,14 @@ Xml   ─▶ Generate ─▶ bytes   (inverse of Parse; RoundTrip checks the inv
 - **The input boundary hard-refuses hostile source** (`service/guard.go`,
   `guardSource` on every `Parse`/`Process`/`Lint`). Sitemaps are fetched from
   arbitrary servers, so before any bytes reach xmile it rejects source over 50 MiB
-  and any document carrying a `DOCTYPE` (the XML entity-expansion vector — sitemaps
-  have none). Defense in depth over xmile's own parser guards (xmile ADR 0009:
-  entity-expansion + nesting-depth caps). See ADR 0003.
+  (`MaxInputBytes`), any document carrying a `DOCTYPE` (the XML entity-expansion
+  vector — sitemaps have none), and any document nesting elements deeper than
+  `MaxDepth` (stack exhaustion). See ADR 0003 and **ADR 0004**.
+  **All three rules are enforced here, not delegated.** The depth rule used to be
+  described as xmile's job, citing an "xmile ADR 0009" that does not exist in a
+  version of xmile that carries no depth cap; the gate failed as soon as the
+  sibling checkout moved forward. A boundary rule delegated to a `replace => ../dep`
+  sibling is not a boundary rule (ADR 0004).
 - **Round-trip is at the canonical infoset** (`service/roundtrip.go`). xmile's
   `Generate` is a faithful inverse of `Parse` but normalizes the encoding
   declaration to UTF-8 and coalesces character-data runs, so `RoundTrip` clears the
@@ -100,7 +111,14 @@ Xml   ─▶ Generate ─▶ bytes   (inverse of Parse; RoundTrip checks the inv
     and `service/adversarial_test.go` — the hardening gates from the adversarial
     review (ADR 0003): priority/loc validation, and the input boundary refusing
     oversized, DOCTYPE-bearing, deeply-nested, and entity-bomb payloads. This is
-    the large-payload / malicious-input coverage the suite must keep.
+    the large-payload / malicious-input coverage the suite must keep. The depth
+    gates additionally pin what must *not* be refused (extensions, self-closing
+    elements, `>` inside attribute values, CDATA/comments with angle brackets) and
+    the cap boundary itself — see ADR 0004.
+    `cmd/sitemap-svc/expand_test.go` gates the walk over `httptest` origins:
+    urlset extraction, index recursion, real gzip children, cycle termination,
+    each truncation budget, cross-host refusal, partial failure, relative `<loc>`
+    resolution, and that a crawl delay actually spaces fetches.
   - The corpus runner (`go run ./testing`, run by `test.sh`) fetches a curated set
     of **real, public sitemaps** (cached under `testing/corpus/`, gitignored) and,
     over each: **gates** that every well-formed document round-trips at the canonical
@@ -122,6 +140,8 @@ Xml   ─▶ Generate ─▶ bytes   (inverse of Parse; RoundTrip checks the inv
 | `service/sitemap_test.go` | self-contained unit gate |
 | `cmd/sitemapparse/` | CLI: doc → typed AST (`-generic` AST, `-lint` warnings) |
 | `cmd/sitemapgenerate/` | CLI: doc → AST → regenerated doc (round-trips through Generate) |
+| `cmd/sitemap-svc/` | HTTP/JSON service: fetch + walk sitemaps → page URLs (`api.go` wire types, `fetch.go` bounded HTTP + gzip + crawl-delay, `expand.go` the breadth-first walk) |
+| `Dockerfile` | the `sitemap-svc` image: builder runs `setup.sh` for the sibling deps, runtime is distroless/static |
 | `testing/` | one corpus fetcher + runner (gates round-trip + projection) |
 | `docs/decisions/` | ADRs (0001 = the architecture) |
 | `docs/claude-worklog/` | build notes |

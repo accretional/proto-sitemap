@@ -50,6 +50,56 @@ go run ./cmd/sitemapparse -lint    sitemap.xml      # conformance warnings
 go run ./cmd/sitemapgenerate       sitemap.xml      # parse → AST → regenerated document
 ```
 
+## Service
+
+`cmd/sitemap-svc` serves the library over HTTP/JSON and adds the half the format
+library deliberately does not carry: fetching. Given sitemap URLs it walks them —
+following a `<sitemapindex>` to its children, breadth-first — and returns every
+page URL it can reach.
+
+```bash
+docker build -t sitemap-svc .
+docker run -p 8080:8080 sitemap-svc
+
+curl -s localhost:8080/v1/sitemap:expand -H 'Content-Type: application/json' -d '{
+  "sitemap_urls": ["https://www.cloudflare.com/sitemap.xml"],
+  "crawl_delay_seconds": 1,
+  "limits": {"max_urls": 5000, "max_sitemaps": 200, "max_depth": 5}
+}'
+```
+
+```jsonc
+{
+  "urls": [{"loc": "...", "lastmod": "...", "source_sitemap": "..."}],
+  "sitemaps_fetched": 3,
+  "truncated": false,
+  "errors": [{"url": "...", "error": "HTTP 404"}],  // recorded, never fatal
+  "elapsed_ms": 812
+}
+```
+
+What the service owns, because the format does not:
+
+- **Gzip.** Sitemaps are commonly served as `.xml.gz`; payloads are gunzipped by
+  magic bytes (covering both the URL suffix and `Content-Encoding`) and the
+  output is capped, so a gzip bomb cannot exhaust memory.
+- **Budgets.** An index may list 50,000 sitemaps of 50,000 URLs each, so every
+  walk is bounded by `max_urls` / `max_sitemaps` / `max_depth`, and a truncated
+  response says so and why rather than silently returning a prefix.
+- **Crawl-delay.** When the caller passes one through from robots.txt, fetches to
+  that host are serialized and spaced by it; otherwise they run concurrently.
+- **Cycles and cross-host children.** A document is never fetched twice (indexes
+  do point at each other), and a child on another host is refused by default —
+  the protocol's own cross-submission rule, and the shape an untrusted index
+  would use to aim the fetcher elsewhere. `-allow-cross-host` permits it.
+- **Partial failure.** A dead or non-sitemap child is recorded in `errors` and
+  the walk continues; a site serving HTML at `/sitemap.xml` is expected, not a
+  bug.
+
+The wire types are plain Go structs (`cmd/sitemap-svc/api.go`), not protos:
+proto-sitemap commits no `.proto` by design, and the transport envelope is not
+the format. The sitemap *domain* stays proto — the typed AST `Process` returns.
+
 ## What "handled" means
 
 - **Both roots**, from one grammar and one compiled descriptor, resolved by the

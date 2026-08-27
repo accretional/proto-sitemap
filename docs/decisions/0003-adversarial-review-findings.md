@@ -180,6 +180,11 @@ touches five files and the wording should be settled first.
 - **D5 wrong-namespace** — unchanged (ADR 0001 trade-off), still pinned by a test.
 - **Deep-nesting crash** (found during the xmile review this depends on) — xmile
   now rejects it with a depth guard (ADR 0009); a proto-sitemap gate covers it.
+  **Superseded by [ADR 0004](0004-depth-guard-owned-here.md) (2026-08-27): xmile
+  ADR 0009 does not exist and xmile carries no depth cap. The guard is now
+  enforced in `guard.go` (`MaxDepth`). The same correction applies to D4's
+  parenthetical about xmile capping entity expansion — the DOCTYPE rejection at
+  our own boundary is what closes D4.**
 
 The boundary (`guard.go`) and validation gates are exercised by the permanent
 tests in `service/adversarial_test.go`, run by `go test ./...`.

@@ -1,0 +1,6 @@
+.git
+testing/corpus
+docs
+*.md
+Dockerfile
+.dockerignore

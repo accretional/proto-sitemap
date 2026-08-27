@@ -160,3 +160,41 @@ func isInputError(err error) bool {
 	_, ok := err.(*InputError)
 	return ok
 }
+
+// The depth guard must refuse pathological nesting without refusing the shapes
+// real sitemaps use: Google's extensions nest a few levels, attribute values may
+// contain '>', self-closing elements open no level, and CDATA/comments may carry
+// anything at all.
+func TestBoundary_DepthGuardAcceptsRealShapes(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{"core", `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://e.com/</loc></url></urlset>`},
+		{"video extension", `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"><url><loc>https://e.com/</loc><video:video><video:title>t</video:title></video:video></url></urlset>`},
+		{"self-closing", `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">` + strings.Repeat(`<url/>`, 5000) + `</urlset>`},
+		{"gt in attribute", `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url title="a > b"><loc>https://e.com/</loc></url></urlset>`},
+		{"cdata with angle brackets", `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc><![CDATA[https://e.com/?a=<<<]]></loc></url></urlset>`},
+		{"comment with angle brackets", `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><!-- <url><url><url> --><url><loc>https://e.com/</loc></url></urlset>`},
+	}
+	for _, tc := range cases {
+		if err := guardSource(tc.src); err != nil {
+			t.Errorf("%s: legitimate source refused by the guard: %v", tc.name, err)
+		}
+	}
+}
+
+// The depth guard trips just past MaxDepth, not before it.
+func TestBoundary_DepthGuardBoundary(t *testing.T) {
+	nest := func(depth int) string {
+		return `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">` +
+			strings.Repeat("<url>", depth) + strings.Repeat("</url>", depth) + `</urlset>`
+	}
+	// The root element itself occupies one level, so MaxDepth-1 nested children fit.
+	if err := guardSource(nest(MaxDepth - 1)); err != nil {
+		t.Errorf("depth %d should be accepted; got %v", MaxDepth-1, err)
+	}
+	if err := guardSource(nest(MaxDepth + 1)); !isInputError(err) {
+		t.Errorf("depth %d should be an *InputError; got %v", MaxDepth+1, err)
+	}
+}
