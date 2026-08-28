@@ -1,28 +1,42 @@
-// Command sitemap-svc serves proto-sitemap over HTTP/JSON: it walks the sitemap
-// URLs it is given — following <sitemapindex> documents to their children — and
+// Command sitemap-svc serves proto-sitemap over gRPC: it walks the sitemap URLs
+// it is given — following <sitemapindex> documents to their children — and
 // returns every page URL it can reach.
+//
+//	sitemap.svc.v1.SitemapService/Expand
+//
+// Server reflection is registered, so grpcurl needs no .proto to call it, and
+// the standard grpc.health.v1.Health service answers health checks.
 //
 // It is the fetching half of the library: proto-sitemap itself takes bytes, so
 // this binary owns the HTTP concerns the format does not (gzip payloads, size
 // and depth budgets, redirect and crawl-delay policy) and hands the bytes to
 // service.Process for the parse.
-//
-//	POST /v1/sitemap:expand   {"sitemap_urls":[...]} -> {"urls":[...], ...}
-//	GET  /healthz
-//
-// Flags are overridden by PORT (Cloud Run's contract) when that is set.
 package main
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"flag"
 	"log"
-	"net/http"
+	"net"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/reflection"
+	"google.golang.org/grpc/status"
+
+	pb "github.com/accretional/proto-sitemap/proto/pb"
 )
+
+// maxMessageBytes is generous because a walk's response carries every URL it
+// found: 50,000 entries is several MiB, well past gRPC's 4 MiB default, and the
+// failure mode would be an opaque ResourceExhausted at the transport layer.
+const maxMessageBytes = 64 << 20
 
 func main() {
 	addr := flag.String("addr", ":8080", "listen address (PORT overrides the port)")
@@ -42,80 +56,74 @@ func main() {
 		log.Fatalf("sitemap-svc: compile schema: %v", err)
 	}
 
-	s := &server{
+	lis, err := net.Listen("tcp", *addr)
+	if err != nil {
+		log.Fatalf("sitemap-svc: listen: %v", err)
+	}
+
+	srv := grpc.NewServer(
+		grpc.MaxRecvMsgSize(maxMessageBytes),
+		grpc.MaxSendMsgSize(maxMessageBytes),
+	)
+	pb.RegisterSitemapServiceServer(srv, &server{
 		fetchTimeout:   *fetchTimeout,
 		requestTimeout: *requestTimeout,
 		concurrency:    *concurrency,
 		allowCrossHost: *allowCrossHost,
-	}
+	})
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/sitemap:expand", s.expand)
-	mux.HandleFunc("GET /healthz", s.healthz)
+	hs := health.NewServer()
+	hs.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	healthpb.RegisterHealthServer(srv, hs)
+	reflection.Register(srv)
 
-	srv := &http.Server{
-		Addr:              *addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-	log.Printf("sitemap-svc: listening on %s", *addr)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	// Drain in-flight walks on SIGTERM — Cloud Run sends one before shutdown,
+	// and a walk can be minutes long.
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-stop
+		log.Printf("sitemap-svc: shutting down")
+		hs.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+		srv.GracefulStop()
+	}()
+
+	log.Printf("sitemap-svc: serving gRPC on %s", *addr)
+	if err := srv.Serve(lis); err != nil {
 		log.Fatalf("sitemap-svc: %v", err)
 	}
 }
 
 type server struct {
+	pb.UnimplementedSitemapServiceServer
 	fetchTimeout   time.Duration
 	requestTimeout time.Duration
 	concurrency    int
 	allowCrossHost bool
 }
 
-func (s *server) expand(w http.ResponseWriter, r *http.Request) {
-	var req ExpandRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
-		return
-	}
-	if len(req.SitemapURLs) == 0 {
-		writeError(w, http.StatusBadRequest, "sitemap_urls must not be empty")
-		return
+func (s *server) Expand(ctx context.Context, req *pb.ExpandRequest) (*pb.ExpandResponse, error) {
+	if len(req.GetSitemapUrls()) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "sitemap_urls must not be empty")
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, s.requestTimeout)
 	defer cancel()
 
 	parse, err := xmileParser()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "compile schema: "+err.Error())
-		return
+		return nil, status.Errorf(codes.Internal, "compile schema: %v", err)
 	}
 
-	delay := time.Duration(req.CrawlDelaySeconds * float64(time.Second))
+	delay := time.Duration(req.GetCrawlDelaySeconds() * float64(time.Second))
 	e := &expander{
-		fetch:          newFetcher(req.UserAgent, delay, s.fetchTimeout, s.concurrency),
+		fetch:          newFetcher(req.GetUserAgent(), delay, s.fetchTimeout, s.concurrency),
 		parser:         parse,
 		allowCrossHost: s.allowCrossHost,
 	}
 
 	resp := e.Expand(ctx, req)
-	log.Printf("expand: roots=%d urls=%d sitemaps=%d errors=%d truncated=%v %dms",
-		len(req.SitemapURLs), len(resp.URLs), resp.SitemapsFetched, len(resp.Errors), resp.Truncated, resp.ElapsedMS)
-	writeJSON(w, http.StatusOK, resp)
-}
-
-func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-func writeJSON(w http.ResponseWriter, code int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		log.Printf("write response: %v", err)
-	}
-}
-
-func writeError(w http.ResponseWriter, code int, msg string) {
-	writeJSON(w, code, map[string]string{"error": msg})
+	log.Printf("Expand: roots=%d urls=%d sitemaps=%d errors=%d truncated=%v %dms",
+		len(req.GetSitemapUrls()), len(resp.Urls), resp.SitemapsFetched, len(resp.Errors), resp.Truncated, resp.ElapsedMs)
+	return resp, nil
 }

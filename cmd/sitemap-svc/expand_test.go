@@ -5,11 +5,22 @@ import (
 	"compress/gzip"
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/reflection"
+	"google.golang.org/grpc/status"
+
+	pb "github.com/accretional/proto-sitemap/proto/pb"
 )
 
 func urlset(locs ...string) string {
@@ -81,12 +92,17 @@ func serve(t *testing.T, routes map[string]any) *httptest.Server {
 	return srv
 }
 
-func locs(resp ExpandResponse) []string {
-	out := make([]string, 0, len(resp.URLs))
-	for _, u := range resp.URLs {
+func locs(resp *pb.ExpandResponse) []string {
+	out := make([]string, 0, len(resp.Urls))
+	for _, u := range resp.Urls {
 		out = append(out, u.Loc)
 	}
 	return out
+}
+
+// req is a small constructor so the tests read as before.
+func req(urls []string, lim *pb.Limits, delay float64) *pb.ExpandRequest {
+	return &pb.ExpandRequest{SitemapUrls: urls, Limits: lim, CrawlDelaySeconds: delay}
 }
 
 func TestExpand_Urlset(t *testing.T) {
@@ -94,13 +110,13 @@ func TestExpand_Urlset(t *testing.T) {
 		"/sitemap.xml": urlset("https://example.com/a", "https://example.com/b"),
 	})
 	e := newExpander(t, 0, false)
-	resp := e.Expand(context.Background(), ExpandRequest{SitemapURLs: []string{srv.URL + "/sitemap.xml"}})
+	resp := e.Expand(context.Background(), req([]string{srv.URL + "/sitemap.xml"}, nil, 0))
 
 	if got := locs(resp); len(got) != 2 || got[0] != "https://example.com/a" {
 		t.Fatalf("urls = %v, want the two locs", got)
 	}
-	if resp.URLs[0].Lastmod != "2026-01-01" {
-		t.Errorf("lastmod = %q, want 2026-01-01", resp.URLs[0].Lastmod)
+	if resp.Urls[0].Lastmod != "2026-01-01" {
+		t.Errorf("lastmod = %q, want 2026-01-01", resp.Urls[0].Lastmod)
 	}
 	if resp.SitemapsFetched != 1 || resp.Truncated {
 		t.Errorf("fetched=%d truncated=%v, want 1/false", resp.SitemapsFetched, resp.Truncated)
@@ -132,7 +148,7 @@ func TestExpand_IndexRecursionAndGzip(t *testing.T) {
 	})
 
 	e := newExpander(t, 0, false)
-	resp := e.Expand(context.Background(), ExpandRequest{SitemapURLs: []string{srv.URL + "/sitemap.xml"}})
+	resp := e.Expand(context.Background(), req([]string{srv.URL + "/sitemap.xml"}, nil, 0))
 
 	got := locs(resp)
 	if len(got) != 2 {
@@ -152,9 +168,9 @@ func TestExpand_CycleTerminates(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	e := newExpander(t, 0, false)
-	done := make(chan ExpandResponse, 1)
+	done := make(chan *pb.ExpandResponse, 1)
 	go func() {
-		done <- e.Expand(context.Background(), ExpandRequest{SitemapURLs: []string{srv.URL + "/sitemap.xml"}})
+		done <- e.Expand(context.Background(), req([]string{srv.URL + "/sitemap.xml"}, nil, 0))
 	}()
 	select {
 	case resp := <-done:
@@ -174,12 +190,9 @@ func TestExpand_MaxURLsTruncates(t *testing.T) {
 	srv := serve(t, map[string]any{"/sitemap.xml": urlset(many...)})
 
 	e := newExpander(t, 0, false)
-	resp := e.Expand(context.Background(), ExpandRequest{
-		SitemapURLs: []string{srv.URL + "/sitemap.xml"},
-		Limits:      &Limits{MaxURLs: 10},
-	})
-	if len(resp.URLs) != 10 || !resp.Truncated {
-		t.Fatalf("urls=%d truncated=%v, want 10/true", len(resp.URLs), resp.Truncated)
+	resp := e.Expand(context.Background(), req([]string{srv.URL + "/sitemap.xml"}, &pb.Limits{MaxUrls: 10}, 0))
+	if len(resp.Urls) != 10 || !resp.Truncated {
+		t.Fatalf("urls=%d truncated=%v, want 10/true", len(resp.Urls), resp.Truncated)
 	}
 	if !strings.Contains(resp.TruncationReason, "max_urls") {
 		t.Errorf("reason = %q, want it to name max_urls", resp.TruncationReason)
@@ -195,10 +208,7 @@ func TestExpand_MaxDepthTruncates(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	e := newExpander(t, 0, false)
-	resp := e.Expand(context.Background(), ExpandRequest{
-		SitemapURLs: []string{srv.URL + "/s"},
-		Limits:      &Limits{MaxDepth: 2},
-	})
+	resp := e.Expand(context.Background(), req([]string{srv.URL + "/s"}, &pb.Limits{MaxDepth: 2}, 0))
 	if !resp.Truncated || !strings.Contains(resp.TruncationReason, "max_depth") {
 		t.Fatalf("truncated=%v reason=%q, want a max_depth truncation", resp.Truncated, resp.TruncationReason)
 	}
@@ -220,10 +230,7 @@ func TestExpand_MaxSitemapsTruncates(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	e := newExpander(t, 0, false)
-	resp := e.Expand(context.Background(), ExpandRequest{
-		SitemapURLs: []string{srv.URL + "/sitemap.xml"},
-		Limits:      &Limits{MaxSitemaps: 5},
-	})
+	resp := e.Expand(context.Background(), req([]string{srv.URL + "/sitemap.xml"}, &pb.Limits{MaxSitemaps: 5}, 0))
 	if !resp.Truncated || !strings.Contains(resp.TruncationReason, "max_sitemaps") {
 		t.Fatalf("truncated=%v reason=%q, want a max_sitemaps truncation", resp.Truncated, resp.TruncationReason)
 	}
@@ -238,8 +245,8 @@ func TestExpand_CrossHostRefusedByDefault(t *testing.T) {
 	srv := serve(t, map[string]any{"/sitemap.xml": sitemapindex(other.URL + "/o.xml")})
 
 	e := newExpander(t, 0, false)
-	resp := e.Expand(context.Background(), ExpandRequest{SitemapURLs: []string{srv.URL + "/sitemap.xml"}})
-	if len(resp.URLs) != 0 {
+	resp := e.Expand(context.Background(), req([]string{srv.URL + "/sitemap.xml"}, nil, 0))
+	if len(resp.Urls) != 0 {
 		t.Errorf("urls = %v, want none (cross-host child refused)", locs(resp))
 	}
 	if len(resp.Errors) != 1 || !strings.Contains(resp.Errors[0].Error, "cross-host") {
@@ -248,8 +255,8 @@ func TestExpand_CrossHostRefusedByDefault(t *testing.T) {
 
 	// ...and followed when explicitly allowed.
 	e = newExpander(t, 0, true)
-	resp = e.Expand(context.Background(), ExpandRequest{SitemapURLs: []string{srv.URL + "/sitemap.xml"}})
-	if len(resp.URLs) != 1 {
+	resp = e.Expand(context.Background(), req([]string{srv.URL + "/sitemap.xml"}, nil, 0))
+	if len(resp.Urls) != 1 {
 		t.Errorf("urls = %v with -allow-cross-host, want 1", locs(resp))
 	}
 }
@@ -272,7 +279,7 @@ func TestExpand_BadChildIsRecordedNotFatal(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	e := newExpander(t, 0, false)
-	resp := e.Expand(context.Background(), ExpandRequest{SitemapURLs: []string{srv.URL + "/sitemap.xml"}})
+	resp := e.Expand(context.Background(), req([]string{srv.URL + "/sitemap.xml"}, nil, 0))
 	if got := locs(resp); len(got) != 1 || got[0] != "https://example.com/good" {
 		t.Fatalf("urls = %v, want just the good child", got)
 	}
@@ -296,13 +303,10 @@ func TestExpand_HonoursCrawlDelay(t *testing.T) {
 	const delay = 150 * time.Millisecond
 	e := newExpander(t, delay, false)
 	start := time.Now()
-	resp := e.Expand(context.Background(), ExpandRequest{
-		SitemapURLs:       []string{srv.URL + "/sitemap.xml"},
-		CrawlDelaySeconds: delay.Seconds(),
-	})
+	resp := e.Expand(context.Background(), req([]string{srv.URL + "/sitemap.xml"}, nil, delay.Seconds()))
 	elapsed := time.Since(start)
 
-	if len(resp.URLs) != 2 {
+	if len(resp.Urls) != 2 {
 		t.Fatalf("urls = %v, want 2", locs(resp))
 	}
 	// Three same-host fetches with a delay between them: at least 2 gaps.
@@ -315,11 +319,64 @@ func TestExpand_HonoursCrawlDelay(t *testing.T) {
 func TestExpand_ResolvesRelativeLoc(t *testing.T) {
 	srv := serve(t, map[string]any{"/dir/sitemap.xml": urlset("/page", "sub/page2")})
 	e := newExpander(t, 0, false)
-	resp := e.Expand(context.Background(), ExpandRequest{SitemapURLs: []string{srv.URL + "/dir/sitemap.xml"}})
+	resp := e.Expand(context.Background(), req([]string{srv.URL + "/dir/sitemap.xml"}, nil, 0))
 
 	want := []string{srv.URL + "/page", srv.URL + "/dir/sub/page2"}
 	got := locs(resp)
 	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("urls = %v, want %v", got, want)
+	}
+}
+
+// The real gRPC surface: served over a socket, reflection registered, health
+// reporting SERVING. This is what grpcurl and Cloud Run actually talk to.
+func TestGRPCSurface(t *testing.T) {
+	origin := serve(t, map[string]any{
+		"/sitemap.xml": urlset("https://example.com/a", "https://example.com/b"),
+	})
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gs := grpc.NewServer()
+	pb.RegisterSitemapServiceServer(gs, &server{
+		fetchTimeout:   5 * time.Second,
+		requestTimeout: 30 * time.Second,
+		concurrency:    4,
+	})
+	hs := health.NewServer()
+	hs.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	healthpb.RegisterHealthServer(gs, hs)
+	reflection.Register(gs)
+	go gs.Serve(lis)
+	defer gs.Stop()
+
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	client := pb.NewSitemapServiceClient(conn)
+
+	got, err := client.Expand(ctx, req([]string{origin.URL + "/sitemap.xml"}, nil, 0))
+	if err != nil {
+		t.Fatalf("Expand over the wire: %v", err)
+	}
+	if len(got.Urls) != 2 {
+		t.Errorf("urls = %v, want 2", locs(got))
+	}
+
+	// An empty request is a client error, not an internal one.
+	if _, err := client.Expand(ctx, &pb.ExpandRequest{}); status.Code(err) != codes.InvalidArgument {
+		t.Errorf("empty sitemap_urls = %v, want InvalidArgument", err)
+	}
+
+	hc, err := healthpb.NewHealthClient(conn).Check(ctx, &healthpb.HealthCheckRequest{})
+	if err != nil || hc.Status != healthpb.HealthCheckResponse_SERVING {
+		t.Errorf("health = %v, %v; want SERVING", hc.GetStatus(), err)
 	}
 }

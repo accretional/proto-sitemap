@@ -1,0 +1,74 @@
+// sitemap_service.proto — the gRPC surface of cmd/sitemap-svc.
+//
+// AUTHORED, NOT GENERATED, and the only .proto this repo carries.
+//
+// proto-sitemap otherwise commits no proto by design: the sitemap *format* is
+// data (formats/sitemap.ebnf), compiled to a descriptor at runtime by xmile's
+// engine (CLAUDE.md, ADR 0001). That still holds — nothing here describes the
+// sitemap format. This file describes the SERVICE: what a caller sends to ask
+// for a walk, and what comes back. The typed sitemap AST remains compiled from
+// the grammar and never appears on the wire.
+//
+// Per CLAUDE.md's rule about adding a hand-written proto, ./regen.sh
+// regenerates the Go bindings; the generated .pb.go files are committed, so an
+// ordinary build needs no protoc.
+syntax = "proto3";
+
+package sitemap.svc.v1;
+
+option go_package = "github.com/accretional/proto-sitemap/proto/pb;sitemappb";
+
+// SitemapService walks sitemaps into page URLs.
+service SitemapService {
+  // Expand walks the given sitemap URLs — following a <sitemapindex> to its
+  // children, breadth-first — and returns every page URL it can reach.
+  rpc Expand(ExpandRequest) returns (ExpandResponse);
+}
+
+// Limits bound a walk. A sitemapindex may list 50,000 sitemaps of 50,000 URLs
+// each, so an unbounded walk is 2.5 billion URLs; every field has a non-zero
+// server-side default for that reason.
+message Limits {
+  int32 max_urls = 1;
+  int32 max_sitemaps = 2;
+  int32 max_depth = 3;
+}
+
+message ExpandRequest {
+  // The roots of the walk — typically the Sitemap: lines a robots.txt declared.
+  // Both <urlset> and <sitemapindex> documents are accepted.
+  repeated string sitemap_urls = 1;
+  // Identifies the fetcher to the origin. Defaults to the service's own UA.
+  string user_agent = 2;
+  // When > 0, honoured between successive fetches to the same host
+  // (robots.txt Crawl-delay). It serializes that host's fetches.
+  double crawl_delay_seconds = 3;
+  // Zero fields take the service's default limits.
+  Limits limits = 4;
+}
+
+// UrlEntry is one <url> from a <urlset>.
+message UrlEntry {
+  string loc = 1;
+  string lastmod = 2;
+  // The sitemap document this entry came from — useful when a walk spans
+  // dozens of child sitemaps.
+  string source_sitemap = 3;
+}
+
+// FetchError records one sitemap that could not be fetched or parsed. A walk
+// reports these and continues: a site serving HTML at /sitemap.xml, or one dead
+// child of a healthy index, does not fail the whole expansion.
+message FetchError {
+  string url = 1;
+  string error = 2;
+}
+
+message ExpandResponse {
+  repeated UrlEntry urls = 1;
+  int32 sitemaps_fetched = 2;
+  bool truncated = 3;
+  string truncation_reason = 4;
+  repeated FetchError errors = 5;
+  int64 elapsed_ms = 6;
+}

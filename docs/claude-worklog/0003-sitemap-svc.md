@@ -52,6 +52,26 @@ regrammar, yielding empty URLs rather than an error.
 cross-submission rule, and it closes the shape where an untrusted `<sitemapindex>`
 aims the fetcher at a host nobody pointed it at. `-allow-cross-host` opts in.
 
+## gRPC conversion (2026-08-28)
+
+`sitemap.svc.v1.SitemapService/Expand`, with server reflection and
+`grpc.health.v1.Health`.
+
+This is the first `.proto` this repo has ever carried, and CLAUDE.md's standing
+rule ("if you ever add a hand-written `.proto`, add a `regen.sh` and document it
+here") is what it satisfies. The distinction that matters and is now written into
+CLAUDE.md: the **format** still has no codegen — `formats/sitemap.ebnf` is data
+compiled at runtime, and the typed AST never appears on the wire — while the
+**service contract** is a proto like any other RPC surface.
+
+`--use-http2` is required on the Cloud Run deploy. Without it Cloud Run
+terminates HTTP/2 at the frontend and speaks HTTP/1.1 to the container, which a
+gRPC server cannot answer; every RPC fails at the transport layer with nothing in
+the application logs.
+
+Message size is 64 MiB both ways rather than gRPC's 4 MiB default: a walk's
+response carries every URL it found, and 50,000 entries is several MiB.
+
 ## Deployment (2026-08-27)
 
 `./deploy.sh` mirrors webrisk-svc's conventions (same project `speax-498608`,

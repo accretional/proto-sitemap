@@ -15,6 +15,8 @@
 # The runtime image is static and distroless: the sitemap vocabulary is embedded
 # (formats/embed.go) and compiled to a descriptor in-process, so the binary needs
 # nothing from disk but the CA bundle distroless already carries.
+#
+# The service is gRPC; Cloud Run must be deployed with --use-http2 (deploy.sh).
 
 ARG GO_VERSION=1.26
 

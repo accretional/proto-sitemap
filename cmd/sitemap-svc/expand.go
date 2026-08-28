@@ -22,8 +22,36 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	pb "github.com/accretional/proto-sitemap/proto/pb"
 	sitemap "github.com/accretional/proto-sitemap/service"
 )
+
+// DefaultLimits are applied to any zero field of a request's Limits. A
+// sitemapindex may list 50,000 sitemaps of 50,000 URLs each, so an unbounded
+// walk is 2.5 billion URLs; every field has a non-zero default for that reason.
+var DefaultLimits = pb.Limits{
+	MaxUrls:     50000, // the protocol's per-file entry cap, as a whole-walk cap
+	MaxSitemaps: 200,   // enough for a large multi-part index, far below 50,000
+	MaxDepth:    5,     // the protocol allows one index level; 5 tolerates abuse
+}
+
+// withDefaults returns l with every zero field replaced by its default.
+func withDefaults(l *pb.Limits) pb.Limits {
+	out := DefaultLimits
+	if l == nil {
+		return out
+	}
+	if l.MaxUrls > 0 {
+		out.MaxUrls = l.MaxUrls
+	}
+	if l.MaxSitemaps > 0 {
+		out.MaxSitemaps = l.MaxSitemaps
+	}
+	if l.MaxDepth > 0 {
+		out.MaxDepth = l.MaxDepth
+	}
+	return out
+}
 
 // expander walks sitemaps. Construct one per request.
 type expander struct {
@@ -42,15 +70,15 @@ type node struct {
 	depth int
 }
 
-// Expand walks from req.SitemapURLs and returns every reachable page URL.
-func (e *expander) Expand(ctx context.Context, req ExpandRequest) ExpandResponse {
+// Expand walks from req's sitemap URLs and returns every reachable page URL.
+func (e *expander) Expand(ctx context.Context, req *pb.ExpandRequest) *pb.ExpandResponse {
 	start := time.Now()
-	lim := req.Limits.withDefaults()
+	lim := withDefaults(req.GetLimits())
 
-	resp := ExpandResponse{URLs: []URLEntry{}}
+	resp := &pb.ExpandResponse{Urls: []*pb.UrlEntry{}}
 	seen := map[string]bool{}
-	queue := make([]node, 0, len(req.SitemapURLs))
-	for _, u := range req.SitemapURLs {
+	queue := make([]node, 0, len(req.GetSitemapUrls()))
+	for _, u := range req.GetSitemapUrls() {
 		if u != "" && !seen[u] {
 			seen[u] = true
 			queue = append(queue, node{url: u, depth: 0})
@@ -68,7 +96,7 @@ func (e *expander) Expand(ctx context.Context, req ExpandRequest) ExpandResponse
 		queue = nil
 
 		// Do not fetch more documents than the budget allows.
-		if remaining := lim.MaxSitemaps - resp.SitemapsFetched; len(level) > remaining {
+		if remaining := int(lim.MaxSitemaps - resp.SitemapsFetched); len(level) > remaining {
 			level = level[:max(remaining, 0)]
 			truncate(fmt.Sprintf("max_sitemaps (%d) reached", lim.MaxSitemaps))
 		}
@@ -78,36 +106,36 @@ func (e *expander) Expand(ctx context.Context, req ExpandRequest) ExpandResponse
 
 		for _, res := range e.fetchLevel(ctx, level) {
 			if res.err != nil {
-				resp.Errors = append(resp.Errors, FetchError{URL: res.node.url, Error: res.err.Error()})
+				resp.Errors = append(resp.Errors, &pb.FetchError{Url: res.node.url, Error: res.err.Error()})
 				continue
 			}
 			resp.SitemapsFetched++
 
 			msg, root, err := e.parser(string(res.body))
 			if err != nil {
-				resp.Errors = append(resp.Errors, FetchError{URL: res.node.url, Error: err.Error()})
+				resp.Errors = append(resp.Errors, &pb.FetchError{Url: res.node.url, Error: err.Error()})
 				continue
 			}
 
 			switch root {
 			case "urlset":
 				for _, entry := range entries(msg, "url") {
-					if len(resp.URLs) >= lim.MaxURLs {
-						truncate(fmt.Sprintf("max_urls (%d) reached", lim.MaxURLs))
+					if len(resp.Urls) >= int(lim.MaxUrls) {
+						truncate(fmt.Sprintf("max_urls (%d) reached", lim.MaxUrls))
 						break
 					}
 					loc := leafText(entry, "loc")
 					if loc == "" {
 						continue
 					}
-					resp.URLs = append(resp.URLs, URLEntry{
-						Loc:     resolve(res.node.url, loc),
-						Lastmod: leafText(entry, "lastmod"),
-						Source:  res.node.url,
+					resp.Urls = append(resp.Urls, &pb.UrlEntry{
+						Loc:           resolve(res.node.url, loc),
+						Lastmod:       leafText(entry, "lastmod"),
+						SourceSitemap: res.node.url,
 					})
 				}
 			case "sitemapindex":
-				if res.node.depth+1 > lim.MaxDepth {
+				if int32(res.node.depth+1) > lim.MaxDepth {
 					truncate(fmt.Sprintf("max_depth (%d) reached", lim.MaxDepth))
 					continue
 				}
@@ -121,8 +149,8 @@ func (e *expander) Expand(ctx context.Context, req ExpandRequest) ExpandResponse
 						continue
 					}
 					if !e.allowCrossHost && !sameHost(res.node.url, child) {
-						resp.Errors = append(resp.Errors, FetchError{
-							URL:   child,
+						resp.Errors = append(resp.Errors, &pb.FetchError{
+							Url:   child,
 							Error: "cross-host sitemap child refused (-allow-cross-host to permit)",
 						})
 						continue
@@ -131,15 +159,15 @@ func (e *expander) Expand(ctx context.Context, req ExpandRequest) ExpandResponse
 					queue = append(queue, node{url: child, depth: res.node.depth + 1})
 				}
 			default:
-				resp.Errors = append(resp.Errors, FetchError{
-					URL:   res.node.url,
+				resp.Errors = append(resp.Errors, &pb.FetchError{
+					Url:   res.node.url,
 					Error: fmt.Sprintf("unexpected sitemap root %q", root),
 				})
 			}
 		}
 	}
 
-	resp.ElapsedMS = time.Since(start).Milliseconds()
+	resp.ElapsedMs = time.Since(start).Milliseconds()
 	return resp
 }
 

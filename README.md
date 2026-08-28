@@ -52,7 +52,7 @@ go run ./cmd/sitemapgenerate       sitemap.xml      # parse → AST → regenera
 
 ## Service
 
-`cmd/sitemap-svc` serves the library over HTTP/JSON and adds the half the format
+`cmd/sitemap-svc` serves the library over **gRPC** and adds the half the format
 library deliberately does not carry: fetching. Given sitemap URLs it walks them —
 following a `<sitemapindex>` to its children, breadth-first — and returns every
 page URL it can reach.
@@ -61,30 +61,40 @@ page URL it can reach.
 docker build -t sitemap-svc .
 docker run -p 8080:8080 sitemap-svc
 
-curl -s localhost:8080/v1/sitemap:expand -H 'Content-Type: application/json' -d '{
+# Server reflection is registered, so grpcurl needs no .proto on hand.
+grpcurl -plaintext localhost:8080 list
+# sitemap.svc.v1.SitemapService, grpc.health.v1.Health, ...
+
+grpcurl -plaintext -d '{
   "sitemap_urls": ["https://www.cloudflare.com/sitemap.xml"],
   "crawl_delay_seconds": 1,
   "limits": {"max_urls": 5000, "max_sitemaps": 200, "max_depth": 5}
-}'
+}' localhost:8080 sitemap.svc.v1.SitemapService/Expand
 ```
 
 ```jsonc
 {
-  "urls": [{"loc": "...", "lastmod": "...", "source_sitemap": "..."}],
-  "sitemaps_fetched": 3,
+  "urls": [{"loc": "...", "lastmod": "...", "sourceSitemap": "..."}],
+  "sitemapsFetched": 3,
   "truncated": false,
   "errors": [{"url": "...", "error": "HTTP 404"}],  // recorded, never fatal
-  "elapsed_ms": 812
+  "elapsedMs": 812
 }
 ```
 
-`./deploy.sh` ships it to Cloud Run (project `speax-498608`, `us-central1`):
-scale-to-zero, IAM-authenticated, a runtime identity with no project roles — the
-service only makes outbound HTTP and needs nothing from GCP.
+Against the deployed service, swap plaintext for TLS and an ID token:
 
+```bash
+grpcurl -H "authorization: Bearer $(gcloud auth print-identity-token)" \
+  -d '{"sitemap_urls":["https://www.cloudflare.com/sitemap.xml"],"limits":{"max_urls":5}}' \
+  sitemap-svc-1041587693629.us-central1.run.app:443 \
+  sitemap.svc.v1.SitemapService/Expand
 ```
-https://sitemap-svc-1041587693629.us-central1.run.app
-```
+
+`./deploy.sh` ships it to Cloud Run (project `speax-498608`, `us-central1`):
+scale-to-zero, IAM-authenticated, **`--use-http2` (required for gRPC)**, and a
+runtime identity with no project roles — the service only makes outbound HTTP
+and needs nothing from GCP.
 
 Sizing differs from a small service, because the work does: 2Gi and a *low*
 per-instance concurrency (concurrent walks multiply peak memory, and a walk can
@@ -110,9 +120,11 @@ What the service owns, because the format does not:
   the walk continues; a site serving HTML at `/sitemap.xml` is expected, not a
   bug.
 
-The wire types are plain Go structs (`cmd/sitemap-svc/api.go`), not protos:
-proto-sitemap commits no `.proto` by design, and the transport envelope is not
-the format. The sitemap *domain* stays proto — the typed AST `Process` returns.
+The service contract is [`proto/sitemap_service.proto`](proto/sitemap_service.proto)
+— the only proto this repo carries, and it describes the *service*, not the
+format. The sitemap format remains data (`formats/sitemap.ebnf`), compiled to a
+descriptor at runtime; the typed AST never appears on the wire. `./regen.sh`
+regenerates the Go bindings into `proto/pb/`.
 
 ## What "handled" means
 

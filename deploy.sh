@@ -1,5 +1,6 @@
 #!/bin/bash
-# Deploys sitemap-svc (cmd/sitemap-svc) to Cloud Run (us-central1). Scale-to-zero,
+# Deploys sitemap-svc (cmd/sitemap-svc), a gRPC service, to Cloud Run
+# (us-central1). Scale-to-zero,
 # IAM-authenticated, no project roles on the runtime identity — it fetches
 # sitemaps from the public internet and needs nothing from GCP.
 #
@@ -48,10 +49,14 @@ DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
 docker push "${IMAGE}:latest"
 docker push "${IMAGE}:${SHA}"
 
+# --use-http2 is REQUIRED for gRPC: without it Cloud Run terminates HTTP/2 at
+# the frontend and speaks HTTP/1.1 to the container, which a gRPC server cannot
+# answer. The symptom is every RPC failing at the transport layer.
 gcloud run deploy sitemap-svc --project="${PROJECT}" --region="${REGION}" \
   --image="${IMAGE}:${SHA}" \
   --service-account="${SA}" \
   --no-allow-unauthenticated \
+  --use-http2 \
   --min-instances=0 --max-instances="${MAX_INSTANCES}" \
   --memory=2Gi --cpu=2 --concurrency="${CONCURRENCY}" \
   --timeout="${TIMEOUT}" \
@@ -61,5 +66,8 @@ URL=$(gcloud run services describe sitemap-svc --project="${PROJECT}" \
   --region="${REGION}" --format='value(status.url)')
 echo
 echo "sitemap-svc: ${URL}"
+echo "Call it:  grpcurl -H \"authorization: Bearer \$(gcloud auth print-identity-token)\" \\"
+echo "            -d '{\"sitemap_urls\":[\"https://www.cloudflare.com/sitemap.xml\"],\"limits\":{\"max_urls\":5}}' \\"
+echo "            ${URL#https://}:443 sitemap.svc.v1.SitemapService/Expand"
 echo "Grant callers: gcloud run services add-iam-policy-binding sitemap-svc \\"
 echo "  --region=${REGION} --member=serviceAccount:<caller-sa> --role=roles/run.invoker"
