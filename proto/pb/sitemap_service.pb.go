@@ -37,8 +37,7 @@ const (
 )
 
 // Limits bound a walk. Each field defaults to MaxInt32 server-side, so essentially
-// they are unbounded. The walk is limited instead by the request deadline, the 64 MiB
-// message cap, and instance memory. Set these explicitly for a walk that always answers, and read
+// they are unbounded. Set these explicitly for a walk that always answers, and read
 // `truncated` on the response.
 type Limits struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
