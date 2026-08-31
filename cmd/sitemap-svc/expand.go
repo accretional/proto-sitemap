@@ -15,6 +15,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/url"
 	"sync"
 	"time"
@@ -26,13 +27,26 @@ import (
 	sitemap "github.com/accretional/proto-sitemap/service"
 )
 
-// DefaultLimits are applied to any zero field of a request's Limits. A
-// sitemapindex may list 50,000 sitemaps of 50,000 URLs each, so an unbounded
-// walk is 2.5 billion URLs; every field has a non-zero default for that reason.
+// DefaultLimits are applied to any zero field of a request's Limits.
+//
+// All three default to MaxInt32 — that is, a walk is unbounded unless the
+// CALLER bounds it. The protocol permits a sitemapindex of 50,000 sitemaps of
+// 50,000 URLs each, so "unbounded" really is up to 2.5 billion URLs, and the
+// budgets are no longer what stops that. What stops it instead:
+//
+//   - the request deadline (-request-timeout, 840s in the deployed config),
+//   - the 64 MiB gRPC message cap, which a response exceeds at roughly 600k
+//     URLs — and exceeding it FAILS the RPC with ResourceExhausted rather than
+//     returning a truncated answer, so a caller gets nothing rather than a
+//     prefix,
+//   - instance memory: every URL found is held until the walk completes.
+//
+// Callers who want a bounded, always-answerable walk should set limits
+// explicitly and read the truncated flag. See ADR/README notes.
 var DefaultLimits = pb.Limits{
-	MaxUrls:     50000, // the protocol's per-file entry cap, as a whole-walk cap
-	MaxSitemaps: 200,   // enough for a large multi-part index, far below 50,000
-	MaxDepth:    5,     // the protocol allows one index level; 5 tolerates abuse
+	MaxUrls:     math.MaxInt32,
+	MaxSitemaps: math.MaxInt32,
+	MaxDepth:    math.MaxInt32,
 }
 
 // withDefaults returns l with every zero field replaced by its default.

@@ -107,9 +107,14 @@ What the service owns, because the format does not:
 - **Gzip.** Sitemaps are commonly served as `.xml.gz`; payloads are gunzipped by
   magic bytes (covering both the URL suffix and `Content-Encoding`) and the
   output is capped, so a gzip bomb cannot exhaust memory.
-- **Budgets.** An index may list 50,000 sitemaps of 50,000 URLs each, so every
-  walk is bounded by `max_urls` / `max_sitemaps` / `max_depth`, and a truncated
-  response says so and why rather than silently returning a prefix.
+- **Budgets — off by default.** `max_urls` / `max_sitemaps` / `max_depth` each
+  default to `MaxInt32`, so a walk is **unbounded unless the caller bounds it**.
+  An index may list 50,000 sitemaps of 50,000 URLs each, so an unbounded walk is
+  up to 2.5 billion URLs; what actually stops one is the request deadline, the
+  64 MiB message cap (~600k URLs — and **exceeding it fails the RPC** with
+  `ResourceExhausted` rather than truncating, so the caller gets nothing instead
+  of a prefix), and instance memory. Set the limits explicitly for a walk that
+  always answers, and read `truncated` / `truncation_reason` on the response.
 - **Crawl-delay.** When the caller passes one through from robots.txt, fetches to
   that host are serialized and spaced by it; otherwise they run concurrently.
 - **Cycles and cross-host children.** A document is never fetched twice (indexes

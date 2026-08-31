@@ -52,6 +52,29 @@ regrammar, yielding empty URLs rather than an error.
 cross-submission rule, and it closes the shape where an untrusted `<sitemapindex>`
 aims the fetcher at a host nobody pointed it at. `-allow-cross-host` opts in.
 
+## Walk budgets defaulted to MaxInt32 (2026-08-31)
+
+`max_urls` / `max_sitemaps` / `max_depth` now default to `math.MaxInt32` instead
+of 50,000 / 200 / 5. A walk is unbounded unless the caller bounds it.
+
+This is a deliberate policy change, so it is worth being clear about what it
+moves rather than removes. The budgets were the mechanism that guaranteed every
+walk terminated with an *answer*. With them off, three other limits become the
+real ones, and they behave differently:
+
+- **the request deadline** (840s deployed) — a walk that exceeds it is cancelled;
+- **the 64 MiB gRPC message cap** — a response exceeds it at roughly 600k URLs,
+  and exceeding it **fails the RPC with ResourceExhausted rather than
+  truncating**. That is the important difference: a budget produced a partial
+  answer plus `truncated: true`; the message cap produces no answer at all;
+- **instance memory** — every URL found is held until the walk completes, on a
+  2Gi instance.
+
+Cycle detection and the cross-host refusal are unaffected, so an unbounded walk
+still terminates on a well-formed site; it is the pathological ones that are now
+unguarded. `TestDefaultLimitsAreUnbounded` pins the values so the change is
+visible if anyone reverts it by habit.
+
 ## gRPC conversion (2026-08-28)
 
 `sitemap.svc.v1.SitemapService/Expand`, with server reflection and

@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -378,5 +379,30 @@ func TestGRPCSurface(t *testing.T) {
 	hc, err := healthpb.NewHealthClient(conn).Check(ctx, &healthpb.HealthCheckRequest{})
 	if err != nil || hc.Status != healthpb.HealthCheckResponse_SERVING {
 		t.Errorf("health = %v, %v; want SERVING", hc.GetStatus(), err)
+	}
+}
+
+// The defaults are deliberately MaxInt32: a walk is unbounded unless the caller
+// bounds it. This is pinned because it is a policy decision, not an accident —
+// with these values the budgets no longer protect the service, and the request
+// deadline, the 64 MiB message cap and instance memory do instead.
+func TestDefaultLimitsAreUnbounded(t *testing.T) {
+	for name, got := range map[string]int32{
+		"max_urls":     DefaultLimits.MaxUrls,
+		"max_sitemaps": DefaultLimits.MaxSitemaps,
+		"max_depth":    DefaultLimits.MaxDepth,
+	} {
+		if got != math.MaxInt32 {
+			t.Errorf("%s default = %d, want math.MaxInt32", name, got)
+		}
+	}
+
+	// A caller's explicit value still wins over the default, per field.
+	l := withDefaults(&pb.Limits{MaxUrls: 10})
+	if l.MaxUrls != 10 {
+		t.Errorf("explicit max_urls = %d, want 10", l.MaxUrls)
+	}
+	if l.MaxSitemaps != math.MaxInt32 || l.MaxDepth != math.MaxInt32 {
+		t.Errorf("unset fields = %d/%d, want the MaxInt32 defaults", l.MaxSitemaps, l.MaxDepth)
 	}
 }

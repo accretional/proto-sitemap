@@ -36,9 +36,14 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// Limits bound a walk. A sitemapindex may list 50,000 sitemaps of 50,000 URLs
-// each, so an unbounded walk is 2.5 billion URLs; every field has a non-zero
-// server-side default for that reason.
+// Limits bound a walk. Each field defaults to MaxInt32 server-side, so a walk is
+// unbounded unless the caller bounds it — the protocol permits a sitemapindex of
+// 50,000 sitemaps of 50,000 URLs each, i.e. up to 2.5 billion URLs.
+//
+// An unbounded walk is limited instead by the request deadline, the 64 MiB
+// message cap (~600k URLs, past which the RPC FAILS rather than truncating), and
+// instance memory. Set these explicitly for a walk that always answers, and read
+// `truncated` on the response.
 type Limits struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	MaxUrls       int32                  `protobuf:"varint,1,opt,name=max_urls,json=maxUrls,proto3" json:"max_urls,omitempty"`

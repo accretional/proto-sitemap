@@ -144,7 +144,7 @@ Xml   ─▶ Generate ─▶ bytes   (inverse of Parse; RoundTrip checks the inv
 | `service/sitemap_test.go` | self-contained unit gate |
 | `cmd/sitemapparse/` | CLI: doc → typed AST (`-generic` AST, `-lint` warnings) |
 | `cmd/sitemapgenerate/` | CLI: doc → AST → regenerated doc (round-trips through Generate) |
-| `cmd/sitemap-svc/` | gRPC service `sitemap.svc.v1.SitemapService/Expand`: fetch + walk sitemaps → page URLs (`fetch.go` bounded HTTP + gzip + crawl-delay, `expand.go` the breadth-first walk); reflection + `grpc.health.v1.Health` registered |
+| `cmd/sitemap-svc/` | gRPC service `sitemap.svc.v1.SitemapService/Expand` (walk budgets default to MaxInt32 — unbounded unless the caller bounds it; `TestDefaultLimitsAreUnbounded` pins that): fetch + walk sitemaps → page URLs (`fetch.go` bounded HTTP + gzip + crawl-delay, `expand.go` the breadth-first walk); reflection + `grpc.health.v1.Health` registered |
 | `proto/sitemap_service.proto`, `regen.sh` | the service contract and its regeneration; bindings committed under `proto/pb/` |
 | `Dockerfile`, `deploy.sh` | the `sitemap-svc` image (builder runs `setup.sh` for the sibling deps; distroless/static) and its Cloud Run deploy — `--use-http2` is required for gRPC |
 | `testing/` | one corpus fetcher + runner (gates round-trip + projection) |
